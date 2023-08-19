@@ -14,4 +14,11 @@ Base MNIST example from [official PyTorch examples](https://github.com/pytorch/e
 
 ## TODO
 
-it should be monotonic improving since best models are included in the next generation. seems to be solved by not using deepcopy.
+* how to tackle dropout in a genetic algo? It was preventing monotonic fitness improvement
+* eliminating dropout makes it overfit quite bad
+* actually implement firewire
+
+## Status
+
+* It learns, strictly monotonic fitness improvement - on the train set!
+* Optimizing directly for accuracy, not for loss
