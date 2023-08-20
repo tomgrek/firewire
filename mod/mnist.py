@@ -54,14 +54,18 @@ def train(args, models, device, train_loader, optimizers, epoch):
                     100. * batch_idx / len(train_loader), loss.item()))
 
 def train_genetic(args, models, device, train_loader, optimizers, epoch):
+    print(f"Num models: {len(models)}") 
+
     for model in models:
         model.train()
     losses = {x: 0. for x in range(len(models))}
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         for i, model in enumerate(models):
-            # optimizer.zero_grad()
-            model.eval()
+            if args.use_dropout:
+                model.train()
+            else:
+                model.eval()
             with torch.no_grad():
                 output = model(data)
                 # optimize for num correct, directly
@@ -76,20 +80,8 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader)))
     # get top 2 models
-    print(losses)
     best = [k for k, v in sorted(losses.items(), key=lambda item: item[1], reverse=True)]
     scores = [losses[x] for x in best]
-    print(best, scores)
-
-    # print(f"The best model is {best[0]} with a loss of {scores[0]}")
-    # repeat_loss = 0.
-    # for batch_idx, (data, target) in enumerate(train_loader):
-    #     data, target = data.to(device), target.to(device)
-    #     with torch.no_grad():
-    #         output = models[best[0]](data)
-    #         loss = F.nll_loss(output, target)
-    #         repeat_loss += loss.item()
-    # print(f"Repeat loss: {repeat_loss}")
     
     # clone top 2 models
     best_0 = deepcopy(models[best[0]])
@@ -99,6 +91,8 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
     for model in models:
         new_models.append(Net())
         for param1, param2, existing, new in zip(best_0.parameters(), best_1.parameters(), model.parameters(), new_models[-1].parameters()):
+            # TODO don't train dropped-out params
+            import ipdb; ipdb.set_trace()
             # crossover
             new.data = param1.data.clone() if torch.rand(1) > 0.5 else param2.data.clone()
             # peturbation
@@ -107,59 +101,57 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
             # mutation
             if torch.rand(1) < args.mutation_rate:
                 new.data = torch.clamp(torch.randn_like(existing.data) * 0.5, -1, 1)
-        new_models[-1].to(device)
+        new_models[-1].to(device).train()
     
     # add top 2 models to population
     # results in a growing population
-    best_0 = best_0.to(device).eval()
-    best_1 = best_1.to(device).eval()
-    new_models += [best_0, best_1]
+    best_0 = best_0.to(device).train()
+    best_1 = best_1.to(device).train()
+
+    if args.growing_population:
+        new_models += [best_1, best_0]
+    else:
+        new_models[-2:] = [best_1, best_0]
+
     return new_models
 
 
-def test(models, device, test_loader, train_loader):
-    print(f"Num models: {len(models)}") 
-    losses = {x: {"test_loss": 0., "correct": 0.} for x in range(len(models))}
-    for i, model in enumerate(models):
-        model.eval()
-        test_loss = 0
-        correct = 0
-        with torch.no_grad():
-            for data, target in test_loader:
-                data, target = data.to(device), target.to(device)
-                output = model(data)
-                losses[i]["test_loss"] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-                pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-                losses[i]["correct"] += pred.eq(target.view_as(pred)).sum().item()
-
-        losses[i]["test_loss"] /= len(test_loader.dataset)
+def test(model, device, test_loader, train_loader):
+    losses = {"test_loss": 0., "correct": 0.}
     
-    best = [k for k, v in sorted(losses.items(), key=lambda item: item[1]["test_loss"])][0]
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            losses["test_loss"] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+            losses["correct"] += pred.eq(target.view_as(pred)).sum().item()
 
+    losses["test_loss"] /= len(test_loader.dataset)
+    
     print('\nTest set: Best loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        losses[best]["test_loss"], losses[best]["correct"], len(test_loader.dataset),
-        100. * losses[best]["correct"] / len(test_loader.dataset)))
-    
-    losses = {x: {"test_loss": 0., "correct": 0.} for x in range(len(models))}
-    for i, model in enumerate(models):
-        model.eval()
-        test_loss = 0
-        correct = 0
-        with torch.no_grad():
-            for data, target in train_loader:
-                data, target = data.to(device), target.to(device)
-                output = model(data)
-                losses[i]["test_loss"] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-                pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-                losses[i]["correct"] += pred.eq(target.view_as(pred)).sum().item()
+        losses["test_loss"], losses["correct"], len(test_loader.dataset),
+        100. * losses["correct"] / len(test_loader.dataset)))
 
-        losses[i]["test_loss"] /= len(test_loader.dataset)
-    
-    best = [k for k, v in sorted(losses.items(), key=lambda item: item[1]["test_loss"])][0]
+    losses = {"test_loss": 0., "correct": 0.}
+    with torch.no_grad():
+        for data, target in train_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            losses["test_loss"] += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+            losses["correct"] += pred.eq(target.view_as(pred)).sum().item()
 
+        losses["test_loss"] /= len(test_loader.dataset)
+    
     print('\nTrain set: Best loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        losses[best]["test_loss"], losses[best]["correct"], len(train_loader.dataset),
-        100. * losses[best]["correct"] / len(train_loader.dataset)))
+        losses["test_loss"], losses["correct"], len(train_loader.dataset),
+        100. * losses["correct"] / len(train_loader.dataset)))
+    
+    model.train()
 
 
 def main():
@@ -195,6 +187,10 @@ def main():
                         help='how many batches to wait before logging training status')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
+    parser.add_argument('--growing-population', action='store_true', default=False,
+                        help='If set, population will grow by 2 each generation (best 2 models are added to population)')
+    parser.add_argument('--use-dropout', action='store_true', default=False,
+                        help='If set, dropout will be active (model.train) and evolution not monotonic')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -231,10 +227,10 @@ def main():
     schedulers = [StepLR(optimizer, step_size=1, gamma=args.gamma) for optimizer in optimizers]
     if args.backprop:
         train(args, models, device, train_loader, optimizers, 1)
-    test(models, device, test_loader, train_loader)
+    test(models[-1], device, test_loader, train_loader)
     for epoch in range(1, args.epochs + 1):
         models = train_genetic(args, models, device, train_loader, optimizers, epoch)
-        test(models, device, test_loader, train_loader)
+        test(models[-1], device, test_loader, train_loader) # last model of next generation is best
         for scheduler in schedulers:
             scheduler.step()
 
