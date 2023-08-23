@@ -8,8 +8,6 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
-last_best = None
-last_best_model = None
 
 class Net(nn.Module):
     def __init__(self):
@@ -20,6 +18,16 @@ class Net(nn.Module):
         self.dropout2 = nn.Dropout(0.5)
         self.fc1 = nn.Linear(9216, 128)
         self.fc2 = nn.Linear(128, 10)
+        self.activations = {}
+        def get_activation(name):
+            def hook(layer, input, output):
+                # TODO deactivate this during "training", only used in genetic algorithm
+                self.activations[name] = output.detach()
+            return hook
+        self.conv1.register_forward_hook(get_activation('conv1'))
+        self.conv2.register_forward_hook(get_activation('conv2'))
+        self.fc1.register_forward_hook(get_activation('fc1'))
+        self.fc2.register_forward_hook(get_activation('fc2'))
 
     def forward(self, x):
         x = self.conv1(x)
@@ -40,6 +48,7 @@ class Net(nn.Module):
 def train(args, models, device, train_loader, optimizers, epoch):
     for model in models:
         model.train()
+        model.store_activations(True)
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         for model, optimizer in zip(models, optimizers):
@@ -84,15 +93,27 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
     scores = [losses[x] for x in best]
     
     # clone top 2 models
+    # TODO if best1 is highly correlated with best0, choose a different best1
     best_0 = deepcopy(models[best[0]])
     best_1 = deepcopy(models[best[1]])
 
+    # batch_idx, (data, target) = next(enumerate(train_loader))
+    # data, target = data.to(device), target.to(device)
+    # best_0(data)
+    # best_1(data)
+    # don't actually need to run a pass, just take the last pass
+    covariance_matrix = torch.cov(torch.cat((best_0.activations['fc1'], best_1.activations['fc1'])))
+    # TODO
+
+
     new_models = []
+    if not args.growing_population:
+        models = models[:-2]
     for model in models:
         new_models.append(Net())
         for param1, param2, existing, new in zip(best_0.parameters(), best_1.parameters(), model.parameters(), new_models[-1].parameters()):
             # TODO don't train dropped-out params
-            import ipdb; ipdb.set_trace()
+            # import ipdb; ipdb.set_trace()
             # crossover
             new.data = param1.data.clone() if torch.rand(1) > 0.5 else param2.data.clone()
             # peturbation
@@ -108,10 +129,7 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
     best_0 = best_0.to(device).train()
     best_1 = best_1.to(device).train()
 
-    if args.growing_population:
-        new_models += [best_1, best_0]
-    else:
-        new_models[-2:] = [best_1, best_0]
+    new_models += [best_1, best_0]
 
     return new_models
 
