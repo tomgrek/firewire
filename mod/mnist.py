@@ -23,6 +23,7 @@ class Net(nn.Module):
             def hook(layer, input, output):
                 # TODO deactivate this during "training", only used in genetic algorithm
                 self.activations[name] = output.detach()
+                # TODO option to save activations before or after nonlinearity
             return hook
         self.conv1.register_forward_hook(get_activation('conv1'))
         self.conv2.register_forward_hook(get_activation('conv2'))
@@ -48,7 +49,6 @@ class Net(nn.Module):
 def train(args, models, device, train_loader, optimizers, epoch):
     for model in models:
         model.train()
-        model.store_activations(True)
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         for model, optimizer in zip(models, optimizers):
@@ -63,7 +63,7 @@ def train(args, models, device, train_loader, optimizers, epoch):
                     100. * batch_idx / len(train_loader), loss.item()))
 
 def train_genetic(args, models, device, train_loader, optimizers, epoch):
-    print(f"Num models: {len(models)}") 
+    print(f"Num models: {len(models)}")
 
     for model in models:
         model.train()
@@ -97,12 +97,38 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
     best_0 = deepcopy(models[best[0]])
     best_1 = deepcopy(models[best[1]])
 
-    # batch_idx, (data, target) = next(enumerate(train_loader))
-    # data, target = data.to(device), target.to(device)
-    # best_0(data)
-    # best_1(data)
-    # don't actually need to run a pass, just take the last pass
-    covariance_matrix = torch.cov(torch.cat((best_0.activations['fc1'], best_1.activations['fc1'])))
+
+    highly_corr = {}
+    print("FC1-----")
+    feat_obs = torch.cat((best_0.activations['fc1'], best_1.activations['fc1']), dim=0).T
+    corr_matrix = torch.corrcoef(feat_obs)
+    highly_corr["fc1"] = corr_matrix > 0.8
+
+    # TODO don't bother with fc2 as it's the output layer
+    print("FC2-----")
+    feat_obs = torch.cat((best_0.activations['fc2'], best_1.activations['fc2']), dim=0).T
+    corr_matrix = torch.corrcoef(feat_obs)
+    highly_corr["fc2"] = corr_matrix > 0.8
+
+    # TODO conv outputs need reshaping
+    print("CONV1-----")
+    conv1_0 = F.max_pool2d(best_0.activations['conv1'], 2)
+    conv1_1 = F.max_pool2d(best_1.activations['conv1'], 2)
+    conv1_0 = torch.flatten(conv1_0, 1)
+    conv1_1 = torch.flatten(conv1_1, 1)
+    feat_obs = torch.cat((conv1_0, conv1_1), dim=0).T
+    corr_matrix = torch.corrcoef(feat_obs)
+    highly_corr["conv1"] = corr_matrix > 0.8
+
+    print("CONV2-----")
+    conv2_0 = F.max_pool2d(best_0.activations['conv2'], 2)
+    conv2_1 = F.max_pool2d(best_1.activations['conv2'], 2)
+    conv2_0 = torch.flatten(conv2_0, 1)
+    conv2_1 = torch.flatten(conv2_1, 1)
+    feat_obs = torch.cat((conv2_0, conv2_1), dim=0).T
+    corr_matrix = torch.corrcoef(feat_obs)
+    highly_corr["conv2"] = corr_matrix > 0.8
+
     # TODO
 
 
@@ -111,7 +137,8 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
         models = models[:-2]
     for model in models:
         new_models.append(Net())
-        for param1, param2, existing, new in zip(best_0.parameters(), best_1.parameters(), model.parameters(), new_models[-1].parameters()):
+        for (name, param1), (name2, param2), (existing_name, existing), (new_name, new) \
+            in zip(best_0.named_parameters(), best_1.named_parameters(), model.named_parameters(), new_models[-1].named_parameters()):
             # TODO don't train dropped-out params
             # import ipdb; ipdb.set_trace()
             # crossover
@@ -122,6 +149,25 @@ def train_genetic(args, models, device, train_loader, optimizers, epoch):
             # mutation
             if torch.rand(1) < args.mutation_rate:
                 new.data = torch.clamp(torch.randn_like(existing.data) * 0.5, -1, 1)
+            
+            if "fc1" in name:
+                if "weight" in name:
+                    # TODO this is a hack, torch.where should work but we are not looking at
+                    # layers, we are looking at weights. The below should broadcast
+                    view = new.data.view(128, 128, -1)
+                    for i in range(len(view)):
+                        for j in range(len(view[i])):
+                            if highly_corr["fc1"][i][j]:
+                                new.data[i][j] = param1.data[i][j]
+                else:
+                    # TODO there are only biases == num neurons, not num_input_features*num_output_features
+                    # come to think of it that should be true for the weights as well, we should just be looking
+                    # at layer activations not weight activations
+                    pass
+                    # for i in range(len(new.data)):
+                    #     if highly_corr["fc1"][i][i]:
+                    #         new.data[i] = param1.data[i]
+                #torch.where(highly_corr["fc1"], existing.data, new.data)
         new_models[-1].to(device).train()
     
     # add top 2 models to population

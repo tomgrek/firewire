@@ -18,6 +18,11 @@ Base MNIST example from [official PyTorch examples](https://github.com/pytorch/e
 * eliminating dropout makes it overfit quite bad
 * actually implement firewire
 
+# NOTES
+
+* Activations of layers of best 2 models don't seem to correlate - each network is learning different things. (TODO a backprop training step first, that probably makes it more homogeneous. Done, and true, but that's probably because there *is* an optimal answer so you'd expect them to converge on it.)
+* conv layers are much more correlated than fc layers
+
 ## Status
 
 * It learns, strictly monotonic fitness improvement - on the train set!
